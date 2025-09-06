@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+IFS=$'\n\t'
+set -e
+
+tmpdir=${XDG_RUNTIME_DIR:-/tmp}
+
+af=(ansifilter -M -f)
+# default placeholder hint
+hint=int:0:0
+case ${1,,} in
+player | media | playerctl)
+	{
+		read -r status
+		read -r icon
+		read -r summary
+		body=$(cat)
+	} < <(playerctl metadata --format '{{status}}
+{{mpris:artUrl}}
+{{title}}</b> by <b>{{artist}}
+on <b>{{album}}</b> {{year}}
+{{duration(position)}} of {{duration(mpris:length)}} | Play count: {{xesam:useCount}}
+<small>{{xesam:url}}
+{{xesam:comment}}</small>')
+	icon="${icon#"file://"}"
+	[[ $status = Paused ]] && hint='string:fgcolor:#eee785'
+	app=playerctl
+	;;
+sensors)
+	summary="Sensors"
+	body="$(sensors | grep '(')"
+	icon=psensor
+	app=sensors
+	;;
+disk | df)
+	summary='Disk Usage:'
+	body=$(grc --colour=on df -h -T -x tmpfs -x overlay -x devtmpfs |
+		ansifilter -M -f)
+	icon=harddrive
+	app="df"
+	hint=int:0:0
+	;;
+cpu | mpstat)
+	summary="CPU Usage:"
+	body=$(S_COLORS=always mpstat -P ALL | tail -n +3 | "${af[@]}")
+	icon=indicator-cpufreq
+	app=mpstat
+	;;
+ip | ip-route)
+	summary="IP Address"
+	body=$(ip --color route | sed 's/^\(.*\)dev \([^ ]*\)/\2: \1/g' |
+		"${af[@]}")
+	icon=network-transmit-receive
+	app=Address
+	;;
+internet | inet | iusage | vnstat)
+	summary="Internet Usage"
+	body=$(
+		vnstat --json m 1 |
+			jq -r '.interfaces[] | .name + "\t|\t" + (.traffic.month[-1] | (.rx + .tx) | tostring)' |
+			numfmt --field=3 --to iec-i --format=%4f |
+			column -t
+	)
+	icon=network-transmit-receive
+	app=vnStat
+	;;
+time | date)
+	summary=$(date +'%A %F %T %Z %z')
+	body=$(TZ=UTC date +'%A %F %T %Z')
+	icon=clock
+	app="date"
+	;;
+*)
+	cat >&2 <<-EOF
+		Usage: $(basename "$0") [ action ]
+
+		Actions:
+
+		This program matches the action on just the first few characters
+		(unless using an abbreviation). So be aware that both "log" and
+		"logarithms" are matched by "logout", for example.
+
+	EOF
+	exit 2
+	;;
+esac
+
+id=$(cat "$tmpdir/sys-notif.id" 2>/dev/null) || id=0
+
+# gdbus is the only dbus cli which supports a{sv} types
+gdbus call --session \
+	--dest org.freedesktop.Notifications \
+	--object-path /org/freedesktop/Notifications \
+	--method org.freedesktop.Notifications.Notify \
+	"$app" "$((id))" "$icon" "$summary" "$body" \
+	'[]' '{}' 0 | sed -E 's/^.* ([[:digit:]]*).*$/\1/' >"$tmpdir/sys-notif.id"
